@@ -1,1 +1,1 @@
-hejs vejs
+hejs
