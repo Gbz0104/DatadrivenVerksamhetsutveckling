@@ -1,0 +1,100 @@
+# utifrån datasetet 2023, genereras förutsägelser om antalet jobbanonser 2024-2027, månadsvis.
+
+
+import pandas as pd
+import numpy as np
+from sklearn.preprocessing import MinMaxScaler
+from keras.models import Sequential
+from keras.layers import Dense, LSTM, Dropout
+from keras.callbacks import EarlyStopping
+from google.colab import drive
+
+# Anslut till Google Drive
+drive.mount('/content/drive')
+
+# Sökväg till filen
+file_path = "/content/drive/My Drive/Colab Notebooks/all_data.csv"
+
+# Läs in filen
+try:
+    data = pd.read_csv(file_path)
+    print(f"Filen {file_path} har lästs in korrekt.")
+except FileNotFoundError:
+    print(f"Filen {file_path} hittades inte.")
+
+# Konvertera datumformat
+data['publication_date'] = pd.to_datetime(data['publication_date'])
+
+# Gruppera data per månad
+monthly_data = data.groupby(data['publication_date'].dt.to_period('M')).size().reset_index(name='num_applications')
+
+# Extrahera data för 2023
+data_2023 = monthly_data[(monthly_data['publication_date'] >= '2023-01') & (monthly_data['publication_date'] <= '2023-12')]
+
+# Skala data
+scaler = MinMaxScaler(feature_range=(0, 1))
+scaled_data = scaler.fit_transform(monthly_data['num_applications'].values.reshape(-1, 1))
+
+# Förbered data för LSTM
+def create_dataset(dataset, look_back=1):
+    X, y = [], []
+    for i in range(len(dataset)-look_back-1):
+        a = dataset[i:(i+look_back), 0]
+        X.append(a)
+        y.append(dataset[i + look_back, 0])
+    return np.array(X), np.array(y)
+
+look_back = 12
+X, y = create_dataset(scaled_data, look_back)
+
+# Dela upp data i tränings- och testuppsättningar
+train_size = int(len(X) * 0.8)
+test_size = len(X) - train_size
+X_train, X_test = X[0:train_size], X[train_size:len(X)]
+y_train, y_test = y[0:train_size], y[train_size:len(y)]
+
+# Omforma data för LSTM [samples, time steps, features]
+X_train = np.reshape(X_train, (X_train.shape[0], X_train.shape[1], 1))
+X_test = np.reshape(X_test, (X_test.shape[0], X_test.shape[1], 1))
+
+# Bygg och träna LSTM-modellen
+model = Sequential()
+model.add(LSTM(100, return_sequences=True, input_shape=(look_back, 1)))
+model.add(Dropout(0.2))
+model.add(LSTM(50, return_sequences=True))
+model.add(Dropout(0.2))
+model.add(LSTM(50))
+model.add(Dense(1))
+model.compile(loss='mean_squared_error', optimizer='adam')
+
+# Early stopping för att undvika överträning
+early_stop = EarlyStopping(monitor='val_loss', patience=10)
+
+model.fit(X_train, y_train, epochs=100, batch_size=32, verbose=2, validation_split=0.2, callbacks=[early_stop])
+
+# Förutsäg framtida värden
+def predict_future(model, data, look_back, steps):
+    future_predictions = []
+    current_step = data[-look_back:]
+    for _ in range(steps):
+        current_step_reshaped = np.reshape(current_step, (1, look_back, 1))
+        next_value = model.predict(current_step_reshaped)
+        future_predictions.append(next_value[0, 0])
+        current_step = np.append(current_step[1:], next_value)
+    return np.array(future_predictions)
+
+# Förutsäg nästa 48 månader (4 år)
+future_steps = 48
+future_predictions = predict_future(model, scaled_data, look_back, future_steps)
+
+# Invers skala framtida förutsägelser
+future_predictions = scaler.inverse_transform(future_predictions.reshape(-1, 1))
+
+# Skapa en DataFrame för alla data
+all_data = pd.concat([data_2023, pd.DataFrame({'publication_date': pd.date_range(start='2024-01-01', periods=future_steps, freq='M'), 'num_applications': future_predictions.flatten().astype(int)})])
+
+# Formatera om datumen till år-månad
+all_data['publication_date'] = all_data['publication_date'].astype(str).str.slice(0, 7)
+
+# Skriv ut tabellen med månad och antal annonser
+print(all_data.to_string(index=False, header=False))
