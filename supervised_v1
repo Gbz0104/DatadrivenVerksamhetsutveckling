@@ -1,4 +1,5 @@
 # utifrån datasetet 2023, genereras förutsägelser om antalet jobbanonser 2024-2027, månadsvis.
+# Tänk på att jag kör detta i google colabs (man ändrar detta i de första kodraderna om man ska köra detta lokalt.)
 
 
 import pandas as pd
