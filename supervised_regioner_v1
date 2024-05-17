@@ -1,0 +1,141 @@
+
+# Fungerande region v1.0
+# Förutsäg framtida antalet annonser i olika regioner
+# Skriver ut månad, region och antal annonser
+
+import pandas as pd
+import numpy as np
+from sklearn.preprocessing import MinMaxScaler
+from keras.models import Sequential
+from keras.layers import Dense, LSTM, Dropout
+from keras.callbacks import EarlyStopping
+from google.colab import drive
+
+# Anslut till Google Drive
+drive.mount('/content/drive', force_remount=True)
+
+# Sökväg till filen
+file_path = "/content/drive/My Drive/Colab Notebooks/all_data.csv"
+
+# Läs in filen
+try:
+    data = pd.read_csv(file_path)
+    print(f"Filen {file_path} har lästs in korrekt.")
+except FileNotFoundError:
+    print(f"Filen {file_path} hittades inte.")
+
+# Konvertera datumformat
+data['publication_date'] = pd.to_datetime(data['publication_date'])
+
+# Gruppera data per region och månad
+region_monthly_data = data.groupby([data['workplace_address.region'], data['publication_date'].dt.to_period('M')]).size().reset_index(name='num_applications')
+
+# Förbered data för LSTM
+def create_dataset(dataset, look_back=1):
+    X, y = [], []
+    for i in range(len(dataset) - look_back - 1):
+        a = dataset[i:(i + look_back), 0]
+        X.append(a)
+        y.append(dataset[i + look_back, 0])
+    return np.array(X), np.array(y)
+
+# Förbereda och träna modell per region
+future_predictions_all = {}
+
+for region in region_monthly_data['workplace_address.region'].unique():
+    print(f"Tränar modell för {region}...")
+
+    # Extrahera data för aktuell region
+    region_data = region_monthly_data[region_monthly_data['workplace_address.region'] == region]
+    region_data = region_data.set_index('publication_date').resample('M').sum().fillna(0).reset_index()
+
+    # Skala data
+    scaler = MinMaxScaler(feature_range=(0, 1))
+    scaled_data = scaler.fit_transform(region_data['num_applications'].values.reshape(-1, 1))
+
+    # Förbered data för LSTM
+    look_back = 12
+    X, y = create_dataset(scaled_data, look_back)
+
+    if len(X) == 0:  # Kontrollera om det finns tillräckligt med data för träning
+        print(f"För lite data för {region}, hoppar över.")
+        continue
+
+    # Dela upp data i tränings- och testuppsättningar
+    train_size = int(len(X) * 0.8)
+    if train_size == 0:  # Kontrollera om det finns tillräckligt med data för att skapa träningsdata
+        print(f"För lite data för att skapa träningsdata för {region}, hoppar över.")
+        continue
+
+    X_train, X_test = X[:train_size], X[train_size:]
+    y_train, y_test = y[:train_size], y[train_size:]
+
+    # Omforma data för LSTM [samples, time steps, features]
+    X_train = np.reshape(X_train, (X_train.shape[0], X_train.shape[1], 1))
+    X_test = np.reshape(X_test, (X_test.shape[0], X_test.shape[1], 1))
+
+    # Bygg och träna LSTM-modellen
+    model = Sequential()
+    model.add(LSTM(100, return_sequences=True, input_shape=(look_back, 1)))
+    model.add(Dropout(0.2))
+    model.add(LSTM(50, return_sequences=True))
+    model.add(Dropout(0.2))
+    model.add(LSTM(50))
+    model.add(Dense(1))
+    model.compile(loss='mean_squared_error', optimizer='adam')
+
+    # Early stopping för att undvika överträning
+    early_stop = EarlyStopping(monitor='val_loss', patience=10)
+
+    if len(X_train) > 1:
+        model.fit(X_train, y_train, epochs=100, batch_size=32, verbose=2, validation_split=0.2, callbacks=[early_stop])
+    else:
+        model.fit(X_train, y_train, epochs=100, batch_size=32, verbose=2, validation_data=(X_test, y_test))
+
+    # Förutsäg framtida värden
+    def predict_future(model, data, look_back, steps):
+        future_predictions = []
+        current_step = data[-look_back:]
+        for _ in range(steps):
+            current_step_reshaped = np.reshape(current_step, (1, look_back, 1))
+            next_value = model.predict(current_step_reshaped)
+            future_predictions.append(next_value[0, 0])
+            current_step = np.append(current_step[1:], next_value)
+        return np.array(future_predictions)
+
+    # Förutsäg nästa 48 månader (4 år)
+    future_steps = 48
+    future_predictions = predict_future(model, scaled_data, look_back, future_steps)
+
+    # Invers skala framtida förutsägelser
+    future_predictions = scaler.inverse_transform(future_predictions.reshape(-1, 1))
+
+    future_predictions_all[region] = future_predictions.flatten().astype(int)
+
+# Skapa DataFrame för framtida förutsägelser
+future_dates = pd.date_range(start='2024-01-01', periods=future_steps, freq='M')
+future_data_all = []
+
+for region, predictions in future_predictions_all.items():
+    for i, prediction in enumerate(predictions):
+        future_data_all.append({'publication_date': future_dates[i], 'workplace_address.region': region, 'num_applications': prediction})
+
+future_df = pd.DataFrame(future_data_all)
+
+# Debug: Kontrollera om kolumnen 'publication_date' finns i future_df
+print("Kolumner i future_df:", future_df.columns)
+
+# Debug: Visa några rader av future_df för att se att datan är korrekt
+print(future_df.head())
+
+# Kontrollera om kolumnen 'publication_date' finns i future_df
+if 'publication_date' in future_df.columns:
+    # Formatera om datumen till år-månad
+    future_df['publication_date'] = future_df['publication_date'].astype(str).str.slice(0, 7)
+    # Skriv ut tabellen med månad, region och antal annonser
+    print(future_df.to_string(index=False, header=False))
+else:
+    print("Kolumnen 'publication_date' finns inte i future_df.")
+
+
+
