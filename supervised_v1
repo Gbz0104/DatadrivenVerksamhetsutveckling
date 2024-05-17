@@ -1,6 +1,8 @@
-# utifrån datasetet 2023, genereras förutsägelser om antalet jobbanonser 2024-2027, månadsvis.
-# Tänk på att jag kör detta i google colabs (man ändrar detta i de första kodraderna om man ska köra detta lokalt.)
+# Fungerande region v1.0
+# Förutsäg framtida antalet annonser (2024-2027)
+# Skriver ut månad och antal annonser
 
+# Tänk på att jag kört detta i google colabs (man ändrar detta i de första kodraderna om man ska köra detta lokalt.)
 
 import pandas as pd
 import numpy as np
